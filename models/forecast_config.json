@@ -1,0 +1,24 @@
+{
+  "features": [
+    "h_now",
+    "h_lag1",
+    "h_lag2",
+    "h_lag3",
+    "h_roll4",
+    "h_roll12",
+    "nb_now",
+    "nb_roll4",
+    "h_lastyear",
+    "nb_lastyear",
+    "h_clim5",
+    "h_cummean",
+    "lat",
+    "lon",
+    "woy",
+    "month"
+  ],
+  "threshold": 0.31228711636040185,
+  "grid_deg": 0.25,
+  "history_weeks": 259,
+  "last_data_week": "2025-12-29"
+}
