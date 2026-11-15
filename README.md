@@ -136,7 +136,7 @@ To rebuild the models from raw data, download the FIRMS country yearly files int
 
 ## Team
 
-Waqar Ahmed · Zohaib Ahmed · Muhammad Hassan · Sakhi Ghulam
+Muhammad Hassan · Waqar Ahmed · Zohaib Ahmed ·  Sakhi Ghulam
 
 ## Use of Super Intelligence (SI)
 
