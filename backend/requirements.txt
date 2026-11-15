@@ -3,8 +3,6 @@ uvicorn[standard]
 pandas
 numpy
 pyarrow
-scipy
 lightgbm
-shap
 httpx
 python-dotenv

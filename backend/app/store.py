@@ -1,15 +1,11 @@
 import calendar
 import json
-import warnings
+import threading
 from collections import OrderedDict
 from pathlib import Path
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
-import shap
 from . import geo
-
-warnings.filterwarnings("ignore", category=UserWarning, module="shap")
 
 VIIRS_START = pd.Timestamp("2012-01-16")
 AQUA_START = pd.Timestamp("2002-07-01")
@@ -73,51 +69,63 @@ def _f(x, nd=3):
 
 
 class Store:
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, bundle_dir):
         data_dir = Path(data_dir)
-        if not (data_dir / "cells.parquet").exists():
-            raise FileNotFoundError(f"web_data not found at {data_dir}. Run step7_export.py and set DATA_DIR.")
+        bundle = Path(bundle_dir)
+        if not (bundle / "meta.json").exists():
+            from .precompute import build_bundle
+            build_bundle(data_dir, bundle)
+        self.data_dir = data_dir
+        self.bundle = bundle
+        meta = json.loads((bundle / "meta.json").read_text())
+        self.features = meta["features"]
+        self.threshold = float(meta["threshold"])
+        self.metrics = meta.get("metrics", {})
+        self.forecast_weeks = pd.DatetimeIndex(pd.to_datetime(meta["forecast_weeks"]))
+        self.all_weeks = pd.date_range(meta["calendar_first"], periods=int(meta["calendar_weeks"]), freq="W-MON")
+        self.cal_first = self.all_weeks[0]
 
-        cells = pd.read_parquet(data_dir / "cells.parquet").sort_values("cell_id").reset_index(drop=True)
+        cells = pd.DataFrame(json.loads((bundle / "cells.json").read_text()))
         cells["cell_id"] = cells["cell_id"].astype("int32")
         names, dist = geo.nearest_cities(cells["lat"], cells["lon"])
         cells["place"] = names
         cells["place_km"] = np.round(dist).astype(int)
-        self.cells = cells
-        self.cell_pos = pd.Series(np.arange(len(cells)), index=cells["cell_id"].to_numpy())
+        self.cells = cells.sort_values("cell_id").reset_index(drop=True)
+        ids = self.cells["cell_id"].to_numpy()
+        self.pos_lookup = np.full(int(ids.max()) + 1, -1, dtype="int32")
+        self.pos_lookup[ids] = np.arange(len(ids), dtype="int32")
 
-        cal = pd.read_parquet(data_dir / "calendar_weekly.parquet")
-        cal["cell_id"] = cal["cell_id"].astype("int32")
-        cal["week"] = pd.to_datetime(cal["week"])
-        self.cal = cal.sort_values(["cell_id", "week"]).reset_index(drop=True)
-        self.all_weeks = pd.date_range(self.cal["week"].min(), self.cal["week"].max(), freq="W-MON")
+        def arr(name):
+            return np.load(bundle / f"{name}.npy", mmap_mode="r")
 
-        cfg = json.loads((data_dir / "models" / "forecast_config.json").read_text())
-        self.features = cfg["features"]
-        self.threshold = float(cfg["threshold"])
+        self.fx, self.fcell, self.fwk = arr("fx"), arr("fcell"), arr("fwk")
+        self.fy, self.fp, self.fc = arr("fy"), arr("fp"), arr("fc")
+        self.ccell, self.cwk, self.ch, self.cm, self.cv = arr("ccell"), arr("cwk"), arr("ch"), arr("cm"), arr("cv")
+        wk = np.arange(len(self.forecast_weeks))
+        starts = np.searchsorted(self.fwk, wk, side="left")
+        ends = np.searchsorted(self.fwk, wk, side="right")
+        self.week_slices = {w: (int(a), int(b)) for w, a, b in zip(self.forecast_weeks, starts, ends)}
 
-        feat = pd.read_parquet(data_dir / "forecast_features.parquet")
-        feat["cell_id"] = feat["cell_id"].astype("int32")
-        feat["target_week"] = pd.to_datetime(feat["target_week"])
-        feat = feat.sort_values(["target_week", "cell_id"]).reset_index(drop=True)
-        self.feat = feat
-        tw = feat["target_week"].to_numpy()
-        self.forecast_weeks = pd.DatetimeIndex(np.unique(tw))
-        starts = np.searchsorted(tw, self.forecast_weeks.values, side="left")
-        ends = np.searchsorted(tw, self.forecast_weeks.values, side="right")
-        self.week_slices = {w: (int(s), int(e)) for w, s, e in zip(self.forecast_weeks, starts, ends)}
-
-        self.clf = lgb.Booster(model_file=str(data_dir / "models" / "forecast_fire_prob.txt"))
-        self.reg = lgb.Booster(model_file=str(data_dir / "models" / "forecast_fire_count.txt"))
-        self.explainer = shap.TreeExplainer(self.clf)
-        base = self.explainer.expected_value
-        self.base_value = float(np.ravel(base)[-1])
-
-        metrics_path = data_dir / "metrics.json"
-        self.metrics = json.loads(metrics_path.read_text()) if metrics_path.exists() else {}
-
+        self._model = None
+        self._model_lock = threading.Lock()
         self._forecast_cache = OrderedDict()
         self._calendar_cache = OrderedDict()
+        self._calendar_fixed = {}
+        for f in (bundle / "calendars").glob("*.json"):
+            self._calendar_fixed[f.stem] = json.loads(f.read_text())
+
+    def model(self):
+        if self._model is None:
+            with self._model_lock:
+                if self._model is None:
+                    import lightgbm as lgb
+                    self._model = lgb.Booster(model_file=str(self.bundle / "forecast_fire_prob.txt"))
+        return self._model
+
+    def position(self, cell_id):
+        if 0 <= cell_id < len(self.pos_lookup) and self.pos_lookup[cell_id] >= 0:
+            return int(self.pos_lookup[cell_id])
+        raise KeyError(f"Unknown cell_id {cell_id}")
 
     def snap_week(self, value):
         if value is None:
@@ -166,17 +174,18 @@ class Store:
             self._forecast_cache.move_to_end(week)
             return self._forecast_cache[week]
         s, e = self.week_slices[week]
-        block = self.feat.iloc[s:e]
-        X = block[self.features]
+        pos = self.pos_lookup[np.asarray(self.fcell[s:e], dtype="int64")]
+        info = self.cells.iloc[pos].reset_index(drop=True)
         df = pd.DataFrame({
-            "cell_id": block["cell_id"].to_numpy(),
-            "p": self.clf.predict(X),
-            "c": self.reg.predict(X),
-            "actual": block["y_cnt"].to_numpy(),
+            "cell_id": info["cell_id"].to_numpy(),
+            "p": np.asarray(self.fp[s:e], dtype="float64"),
+            "c": np.asarray(self.fc[s:e], dtype="float64"),
+            "actual": np.asarray(self.fy[s:e], dtype="float64"),
         })
-        df = df.merge(self.cells[["cell_id", "lat", "lon", "country", "punjab", "place", "place_km"]], on="cell_id")
+        for col in ["lat", "lon", "country", "punjab", "place", "place_km"]:
+            df[col] = info[col].to_numpy()
         self._forecast_cache[week] = df
-        if len(self._forecast_cache) > 64:
+        if len(self._forecast_cache) > 24:
             self._forecast_cache.popitem(last=False)
         return df
 
@@ -213,14 +222,9 @@ class Store:
             } for r in top.itertuples()],
         }
 
-    def _shap_row(self, X):
-        sv = self.explainer.shap_values(X)
-        if isinstance(sv, list):
-            sv = sv[-1]
-        sv = np.asarray(sv)
-        if sv.ndim == 3:
-            sv = sv[..., -1]
-        return sv[0]
+    def _contributions(self, x):
+        out = np.asarray(self.model().predict(x, pred_contrib=True))[0]
+        return out[:-1], float(out[-1])
 
     def _sentence(self, name, value):
         tpl = SENTENCES.get(name, LABELS.get(name, name))
@@ -232,20 +236,17 @@ class Store:
             return tpl
 
     def explain(self, cell_id, week):
-        if cell_id not in self.cell_pos.index:
-            raise KeyError(f"Unknown cell_id {cell_id}")
+        pos = self.position(cell_id)
         s, e = self.week_slices[week]
-        block = self.feat.iloc[s:e]
-        ids = block["cell_id"].to_numpy()
+        ids = self.fcell[s:e]
         i = int(np.searchsorted(ids, cell_id))
         if i >= len(ids) or ids[i] != cell_id:
             raise KeyError(f"No data for cell {cell_id} in week {week.date()}")
-        row = block.iloc[[i]]
-        X = row[self.features]
-        p = float(self.clf.predict(X)[0])
-        c = float(self.reg.predict(X)[0])
-        contribs = self._shap_row(X)
-        values = X.iloc[0].to_numpy(dtype="float64")
+        r = s + i
+        values = np.asarray(self.fx[r], dtype="float64")
+        contribs, base_value = self._contributions(values.reshape(1, -1))
+        p = float(self.fp[r])
+        c = float(self.fc[r])
         order = np.argsort(-np.abs(contribs))
         factors = [{
             "feature": self.features[j],
@@ -263,8 +264,8 @@ class Store:
         text += "."
         if downs and level in ("low", "moderate"):
             text += " Risk is held down because " + " and ".join(downs) + "."
-        cell = self.cells.iloc[int(self.cell_pos[cell_id])]
-        actual = row["y_cnt"].iloc[0]
+        cell = self.cells.iloc[pos]
+        actual = float(self.fy[r])
         return {
             "cell_id": int(cell_id),
             "week": str(week.date()),
@@ -275,30 +276,44 @@ class Store:
             "actual_fires": _f(actual, 1),
             "level": level,
             "threshold": round(self.threshold, 4),
-            "base_value": round(self.base_value, 4),
+            "base_value": round(base_value, 4),
             "summary": text,
             "factors": factors,
             "history": self.cell_history(cell_id, week),
         }
 
+    def _cell_rows(self, cell_id):
+        a = int(np.searchsorted(self.ccell, cell_id, side="left"))
+        b = int(np.searchsorted(self.ccell, cell_id, side="right"))
+        return a, b
+
     def cell_history(self, cell_id, week, weeks_back=16):
-        rows = self.cal[self.cal["cell_id"] == cell_id].set_index("week")["h_count"]
+        a, b = self._cell_rows(cell_id)
+        dense = np.zeros(len(self.all_weeks), dtype="float64")
+        dense[np.asarray(self.cwk[a:b], dtype="int64")] = np.asarray(self.ch[a:b], dtype="float64")
         idx = pd.date_range(week - pd.Timedelta(weeks=weeks_back), week + pd.Timedelta(weeks=4), freq="W-MON")
-        this_year = rows.reindex(idx).fillna(0)
-        last_year = rows.reindex(idx - pd.Timedelta(weeks=52)).fillna(0)
+
+        def take(dates):
+            k = ((dates - self.cal_first).days // 7).to_numpy()
+            ok = (k >= 0) & (k < len(dense))
+            out = np.zeros(len(k))
+            out[ok] = dense[k[ok]]
+            return out
+
+        this_year = take(idx)
+        last_year = take(idx - pd.Timedelta(weeks=52))
         return [{
             "week": str(w.date()),
-            "fires": None if w > self.all_weeks[-1] else round(float(a), 1),
-            "last_year": round(float(b), 1),
+            "fires": None if w > self.all_weeks[-1] else round(float(x), 1),
+            "last_year": round(float(y), 1),
             "is_target": bool(w == week),
-        } for w, a, b in zip(idx, this_year.to_numpy(), last_year.to_numpy())]
+        } for w, x, y in zip(idx, this_year, last_year)]
 
     def region_cells(self, region=None, lat_min=None, lat_max=None, lon_min=None, lon_max=None, cell_id=None):
         c = self.cells
         if cell_id is not None:
-            if cell_id not in self.cell_pos.index:
-                raise KeyError(f"Unknown cell_id {cell_id}")
-            row = c.iloc[int(self.cell_pos[cell_id])]
+            pos = self.position(cell_id)
+            row = c.iloc[pos]
             return np.array([cell_id]), f"Box near {row['place']} ({row['lat']:.2f}, {row['lon']:.2f})"
         if None not in (lat_min, lat_max, lon_min, lon_max):
             m = c["lat"].between(lat_min, lat_max) & c["lon"].between(lon_min, lon_max)
@@ -321,11 +336,22 @@ class Store:
         return ids, label
 
     def calendar_payload(self, key, ids, label):
+        region = key[0] if all(k is None for k in key[1:]) else None
+        if region in self._calendar_fixed:
+            return self._calendar_fixed[region]
         if key in self._calendar_cache:
             return self._calendar_cache[key]
-        sub = self.cal[self.cal["cell_id"].isin(ids)]
-        g = sub.groupby("week").agg(h=("h_count", "sum"), m=("m_count", "sum"), v=("v_count", "sum"))
-        g = g.reindex(self.all_weeks).fillna(0)
+        n = len(self.all_weeks)
+        if len(ids) == 1:
+            a, b = self._cell_rows(int(ids[0]))
+            sel = slice(a, b)
+        else:
+            sel = np.isin(self.ccell, np.asarray(ids, dtype=self.ccell.dtype))
+        wk = np.asarray(self.cwk[sel], dtype="int64")
+        h = np.bincount(wk, weights=np.asarray(self.ch[sel], dtype="float64"), minlength=n)
+        m = np.bincount(wk, weights=np.asarray(self.cm[sel], dtype="float64"), minlength=n)
+        v = np.bincount(wk, weights=np.nan_to_num(np.asarray(self.cv[sel], dtype="float64")), minlength=n)
+        g = pd.DataFrame({"h": h, "m": m, "v": v}, index=self.all_weeks)
         g.loc[g.index < VIIRS_START, "v"] = np.nan
         iso = g.index.isocalendar()
         g["iso_year"] = iso["year"].to_numpy().astype(int)

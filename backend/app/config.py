@@ -11,6 +11,7 @@ def _path(value, default):
 
 
 DATA_DIR = _path(os.getenv("DATA_DIR"), BACKEND_DIR.parent / "web_data")
+PRECOMPUTED_DIR = _path(os.getenv("PRECOMPUTED_DIR"), BACKEND_DIR / "precomputed")
 FRONTEND_DIST = _path(os.getenv("FRONTEND_DIST"), BACKEND_DIR.parent / "frontend" / "dist")
 METEOMATICS_USERNAME = os.getenv("METEOMATICS_USERNAME", "")
 METEOMATICS_PASSWORD = os.getenv("METEOMATICS_PASSWORD", "")

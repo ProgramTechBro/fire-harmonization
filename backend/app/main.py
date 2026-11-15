@@ -1,3 +1,4 @@
+import threading
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from typing import Optional
@@ -12,11 +13,12 @@ from .store import Store
 
 @asynccontextmanager
 async def lifespan(app):
-    app.state.store = Store(config.DATA_DIR)
+    app.state.store = Store(config.DATA_DIR, config.PRECOMPUTED_DIR)
+    threading.Thread(target=app.state.store.model, daemon=True).start()
     yield
 
 
-app = FastAPI(title="Fire Harmonization API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Emberlog API", version="1.0.0", lifespan=lifespan)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(CORSMiddleware, allow_origins=config.ALLOWED_ORIGINS, allow_methods=["GET"], allow_headers=["*"])
 

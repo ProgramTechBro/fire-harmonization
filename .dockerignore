@@ -1,0 +1,16 @@
+.git
+.github
+data/
+processed/
+results/
+models/
+web_data/
+venv/
+backend/venv/
+backend/.env
+backend/precomputed_building/
+frontend/node_modules/
+frontend/dist/
+**/__pycache__/
+*.csv
+*.zip

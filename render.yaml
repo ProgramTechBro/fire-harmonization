@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: emberlog
+    runtime: docker
+    plan: free
+    branch: main
+    autoDeploy: true
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/health
+    envVars:
+      - key: METEOMATICS_USERNAME
+        sync: false
+      - key: METEOMATICS_PASSWORD
+        sync: false
