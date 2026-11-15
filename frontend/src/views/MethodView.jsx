@@ -46,7 +46,7 @@ export default function MethodView({ metrics }) {
   const cls = metrics?.forecast_classification_test_2024_2025 || [];
   return (
     <>
-      <PageHeader kicker="Method" title="How FireSync works">
+      <PageHeader kicker="Method" title="How Emberlog works">
         Built for the 2026 NASA Space Apps Challenge, Harmonization of MODIS and VIIRS Hot Spots. Every number on this
         site comes from open NASA satellite data.
       </PageHeader>

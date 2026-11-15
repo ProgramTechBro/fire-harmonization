@@ -93,7 +93,7 @@ export default function App() {
         >
           <Mark />
           <span className="brand-text">
-            <strong>FireSync</strong>
+            <strong>Emberlog</strong>
             <span className="brand-sub">Satellite fire record for Pakistan and India</span>
           </span>
         </a>
@@ -176,7 +176,7 @@ export default function App() {
           <div className="footer-inner">
             <div className="footer-brand">
               <Mark size={26} />
-              <strong>FireSync</strong>
+              <strong>Emberlog</strong>
             </div>
             <p>
               Fire data from NASA FIRMS, MODIS Collection 6.1 and VIIRS S-NPP 375 m. Weather from Meteomatics. Map data

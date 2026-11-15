@@ -62,7 +62,7 @@ export default function HomeView({ meta, cells, metrics, heroWeek, go, openBox }
           <h1>Twenty-six years of fire, counted the same way.</h1>
           <p className="hero-lede">
             Satellites have watched fires across Pakistan and India since 2000, but two generations of sensors count them
-            differently. FireSync joins MODIS and VIIRS into one consistent record, forecasts next week's burning, and
+            differently. Emberlog joins MODIS and VIIRS into one consistent record, forecasts next week's burning, and
             shows where the smoke is heading.
           </p>
           <div className="hero-actions">
@@ -81,7 +81,7 @@ export default function HomeView({ meta, cells, metrics, heroWeek, go, openBox }
         </p>
       </section>
 
-      <section className="facts" aria-label="FireSync in numbers">
+      <section className="facts" aria-label="Emberlog in numbers">
         {facts.map((f) => (
           <div key={f.label} className="fact">
             <span className="fact-value">{f.value}</span>
